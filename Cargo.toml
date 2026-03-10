@@ -31,8 +31,12 @@ http-body-util = "0.1"
 tower = "0.5"
 tower-service = "0.3"
 mime_guess = "2"
-hex = "0.4"
 dirs = "5"
 anyhow = "1"
+brotli = "7"
 time = "0.3"
 libc = "0.2"
+
+[build-dependencies]
+zip = { version = "2", default-features = false }
+brotli = "7"

@@ -2,11 +2,11 @@ use seal::state::{AppState, LocalApp};
 use crate::url::local_app_host;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use std::io::Read;
 use tiny_keccak::{Hasher, Keccak};
 
-/// Handle zip file upload: hash it, extract it, register it, redirect to the app.
+/// Handle zip file upload: hash it, extract it, register it, return the app URL.
 pub async fn handle_upload(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -20,10 +20,10 @@ pub async fn handle_upload(
     };
 
     // Compute keccak256 hash
-    let hash_hex = keccak256_hex(&zip_bytes);
+    let hash_id = content_hash(&zip_bytes);
 
     // Extract zip to site directory
-    let site_dir = state.site_dir(&hash_hex);
+    let site_dir = state.site_dir(&hash_id);
     if !site_dir.exists() {
         if let Err(e) = extract_zip(&zip_bytes, &site_dir) {
             return (
@@ -42,7 +42,7 @@ pub async fn handle_upload(
 
     // Register in state
     let app = LocalApp {
-        hash: hash_hex.clone(),
+        hash: hash_id.clone(),
         name,
         installed_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -58,8 +58,9 @@ pub async fn handle_upload(
             .into_response();
     }
 
-    let host = local_app_host(&hash_hex);
-    Redirect::to(&format!("https://{host}/")).into_response()
+    let host = local_app_host(&hash_id);
+    let url = format!("https://{host}/");
+    url.into_response()
 }
 
 async fn read_upload(multipart: &mut Multipart) -> anyhow::Result<(Vec<u8>, String)> {
@@ -77,27 +78,112 @@ async fn read_upload(multipart: &mut Multipart) -> anyhow::Result<(Vec<u8>, Stri
     anyhow::bail!("no file field in upload")
 }
 
-fn keccak256_hex(data: &[u8]) -> String {
+/// Compute keccak256, truncate to 192 bits, return base36-encoded string (~38 chars).
+/// Base36 is DNS-safe (case-insensitive, alphanumeric only).
+fn content_hash(data: &[u8]) -> String {
     let mut hasher = Keccak::v256();
     hasher.update(data);
-    let mut output = [0u8; 32];
-    hasher.finalize(&mut output);
-    hex::encode(output)
+    let mut full = [0u8; 32];
+    hasher.finalize(&mut full);
+    base36_encode(&full[..24])
 }
 
-fn extract_zip(zip_bytes: &[u8], dest: &std::path::Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dest)?;
+/// Encode bytes as a base36 string (0-9, a-z). DNS-safe and case-insensitive.
+fn base36_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
+    if bytes.iter().all(|&b| b == 0) {
+        return "0".to_string();
+    }
+
+    // Work on a mutable copy, repeatedly divide by 36
+    let mut num = bytes.to_vec();
+    let mut digits = Vec::new();
+
+    while num.iter().any(|&b| b != 0) {
+        let mut remainder: u16 = 0;
+        for byte in num.iter_mut() {
+            let val = (remainder << 8) | (*byte as u16);
+            *byte = (val / 36) as u8;
+            remainder = val % 36;
+        }
+        digits.push(ALPHABET[remainder as usize]);
+    }
+
+    digits.reverse();
+    String::from_utf8(digits).unwrap()
+}
+
+/// Validate bundle format: all entries must be under `<app>/content/`.
+/// Returns the app wrapper dir name (e.g. "my-app" from "my-app/content/index.html").
+fn validate_bundle(archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> anyhow::Result<String> {
+    let mut wrapper: Option<String> = None;
+
+    for i in 0..archive.len() {
+        let entry = archive.by_index_raw(i)?;
+        let Some(path) = entry.enclosed_name() else {
+            continue;
+        };
+        let mut components = path.components();
+        let first = components
+            .next()
+            .and_then(|c| c.as_os_str().to_str().map(String::from))
+            .ok_or_else(|| anyhow::anyhow!("invalid bundle: entry with no path components"))?;
+
+        // Every entry must start with the same wrapper dir
+        match &wrapper {
+            None => wrapper = Some(first.clone()),
+            Some(w) if *w != first => {
+                anyhow::bail!(
+                    "invalid bundle: multiple top-level entries ({w}/ and {first}/). \
+                     Expected a single wrapper directory."
+                );
+            }
+            _ => {}
+        }
+
+        // Non-directory entries must be under <wrapper>/content/
+        if !entry.is_dir() {
+            let second = components.next().and_then(|c| c.as_os_str().to_str().map(String::from));
+            if second.as_deref() != Some("content") {
+                anyhow::bail!(
+                    "invalid bundle: file \"{}\" is not under {}/content/",
+                    path.display(),
+                    first,
+                );
+            }
+        }
+    }
+
+    wrapper.ok_or_else(|| anyhow::anyhow!("invalid bundle: zip is empty"))
+}
+
+/// Extract the `<wrapper>/content/` subtree from a bundle zip into `dest`.
+fn extract_zip(zip_bytes: &[u8], dest: &std::path::Path) -> anyhow::Result<()> {
     let cursor = std::io::Cursor::new(zip_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
+
+    let wrapper = validate_bundle(&mut archive)?;
+    let content_prefix = format!("{wrapper}/content/");
+
+    std::fs::create_dir_all(dest)?;
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let Some(enclosed_name) = file.enclosed_name() else {
-            continue; // skip entries with unsafe paths
+            continue;
         };
-        let out_path = dest.join(enclosed_name);
+        let name_str = enclosed_name.to_string_lossy();
 
+        // Only extract entries under <wrapper>/content/
+        let Some(rel) = name_str.strip_prefix(&content_prefix) else {
+            continue;
+        };
+        if rel.is_empty() {
+            continue; // skip the content/ dir entry itself
+        }
+
+        let out_path = dest.join(rel);
         if file.is_dir() {
             std::fs::create_dir_all(&out_path)?;
         } else {

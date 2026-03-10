@@ -34,6 +34,9 @@ COMMANDS:
     stop     Stop the running daemon.
                sudo seal stop
 
+    restart  Stop and start the daemon.
+               sudo seal restart
+
     status   Check if the daemon is running.
                seal status
 
@@ -70,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some("run") => cmd_run(false).await,
         Some("stop") => cmd_stop(),
+        Some("restart") => cmd_restart(),
         Some("status") => cmd_status(),
         Some("reinstall") => {
             let full = args.iter().any(|a| a == "--full");
@@ -248,6 +252,12 @@ fn cmd_stop() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `seal restart` — stop and start the daemon.
+fn cmd_restart() -> anyhow::Result<()> {
+    cmd_stop()?;
+    cmd_start()
+}
+
 /// `seal status` — check if daemon is running.
 fn cmd_status() -> anyhow::Result<()> {
     match service::status()? {
@@ -257,38 +267,16 @@ fn cmd_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `seal reinstall` — reconfigure DNS (and optionally certs/trust store), restart if was running.
+/// `seal reinstall` — full teardown and re-install.
+/// Without --full: keeps CA certificates on disk (seal-ptr clients stay valid).
+/// With --full: also regenerates certs.
 async fn cmd_reinstall(full: bool) -> anyhow::Result<()> {
-    // Detect if running via service manager (not `seal run`)
     let was_service_running = matches!(service::status(), Ok(Some(_)));
 
-    // Stop the service if running
-    if was_service_running {
-        eprintln!("stopping daemon...");
-        service::stop()?;
-    }
+    // Teardown — same as uninstall, but we don't print the final message
+    cmd_uninstall_inner(full)?;
 
-    if full {
-        // --full: regenerate certs and trust store too
-        let data_dir = state::data_dir();
-        let ca_dir = data_dir.join("ca");
-        if ca_dir.exists() {
-            std::fs::remove_dir_all(&ca_dir)?;
-            eprintln!("removed old CA certificates");
-        }
-
-        match tls::uninstall_trust_store() {
-            Ok(()) => {}
-            Err(e) => eprintln!("warning: could not remove trust store entry: {e}"),
-        }
-    }
-
-    match dns::unconfigure() {
-        Ok(_) => {}
-        Err(e) => eprintln!("warning: could not remove DNS configuration: {e}"),
-    }
-
-    // Re-run install (idempotent for certs if they still exist)
+    // Re-install
     eprintln!();
     cmd_install().await?;
 
@@ -302,10 +290,23 @@ async fn cmd_reinstall(full: bool) -> anyhow::Result<()> {
 }
 
 /// `seal uninstall` — remove seal state from the system.
-/// By default, CA certificates on disk are preserved so `seal install`
-/// reuses them (seal-ptr clients don't need to update).
-/// Use --full to also delete the CA directory.
 fn cmd_uninstall(full: bool) -> anyhow::Result<()> {
+    cmd_uninstall_inner(full)?;
+
+    eprintln!();
+    if full {
+        eprintln!("seal has been fully uninstalled");
+    } else {
+        eprintln!("seal has been uninstalled (CA certificates retained for seal-ptr compatibility)");
+        eprintln!("to also remove certificates: sudo seal uninstall --full");
+    }
+    Ok(())
+}
+
+/// Shared teardown logic for uninstall and reinstall.
+/// Without --full: keeps CA certificates on disk.
+/// With --full: removes everything including CA.
+fn cmd_uninstall_inner(full: bool) -> anyhow::Result<()> {
     let data_dir = state::data_dir();
 
     // 1. Stop and remove system service
@@ -356,13 +357,6 @@ fn cmd_uninstall(full: bool) -> anyhow::Result<()> {
         }
     }
 
-    eprintln!();
-    if full {
-        eprintln!("seal has been fully uninstalled");
-    } else {
-        eprintln!("seal has been uninstalled (CA certificates retained for seal-ptr compatibility)");
-        eprintln!("to also remove certificates: sudo seal uninstall --full");
-    }
     Ok(())
 }
 

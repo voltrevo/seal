@@ -125,7 +125,7 @@ async fn handle_request(
                 } else {
                     Response::builder()
                         .status(StatusCode::NOT_FOUND)
-                        .body(Body::from("App not installed"))
+                        .body(Body::from("App not known"))
                         .unwrap()
                 }
             }
@@ -140,8 +140,8 @@ async fn handle_request(
             .status(StatusCode::NOT_FOUND)
             .header("content-type", "text/html; charset=utf-8")
             .body(Body::from(
-                "<html><body><h1>App not installed</h1>\
-                 <p>This .seal app is not installed yet. \
+                "<html><body><h1>App not found</h1>\
+                 <p>This .seal app is not known to the daemon. \
                  <a href=\"https://home.seal/\">Go to home.seal</a> to manage your apps.</p>\
                  </body></html>",
             ))

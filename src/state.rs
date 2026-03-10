@@ -14,11 +14,11 @@ pub fn data_dir() -> PathBuf {
 /// Per-app metadata stored on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalApp {
-    /// Keccak256 hash of the zip file (hex, no 0x prefix).
+    /// Keccak256 hash of the zip file (base36-encoded, 192-bit truncated).
     pub hash: String,
     /// Human-readable name (derived from zip filename or directory).
     pub name: String,
-    /// When the app was installed (unix timestamp).
+    /// When the app was added (unix timestamp).
     pub installed_at: u64,
 }
 
@@ -30,7 +30,7 @@ pub struct AppState {
 }
 
 struct Inner {
-    /// Local apps keyed by keccak256 hash (hex).
+    /// Local apps keyed by keccak256 hash (base36).
     local_apps: HashMap<String, LocalApp>,
 }
 
@@ -84,6 +84,7 @@ impl AppState {
         inner.local_apps.get(hash).cloned()
     }
 
+
     pub async fn register_local_app(&self, app: LocalApp) -> anyhow::Result<()> {
         let state_path = self.data_dir.join("state").join(format!("{}.json", app.hash));
         let json = serde_json::to_string_pretty(&app)?;
@@ -92,6 +93,27 @@ impl AppState {
         let mut inner = self.inner.write().await;
         inner.local_apps.insert(app.hash.clone(), app);
         Ok(())
+    }
+
+    /// Forget a local app: remove its state file and site directory.
+    /// Returns Ok(true) if the app was found, Ok(false) if not.
+    pub async fn forget_local_app(&self, hash: &str) -> anyhow::Result<bool> {
+        let mut inner = self.inner.write().await;
+        if inner.local_apps.remove(hash).is_none() {
+            return Ok(false);
+        }
+
+        let state_path = self.data_dir.join("state").join(format!("{hash}.json"));
+        if state_path.exists() {
+            std::fs::remove_file(&state_path)?;
+        }
+
+        let site_dir = self.data_dir.join("sites").join(hash);
+        if site_dir.exists() {
+            std::fs::remove_dir_all(&site_dir)?;
+        }
+
+        Ok(true)
     }
 
     /// Path to extracted site content for a local app.

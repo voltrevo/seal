@@ -1,32 +1,71 @@
 use crate::local::handle_upload;
 use crate::url::local_app_host;
 use axum::extract::State;
-use axum::response::Html;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use seal::state::AppState;
+use std::sync::OnceLock;
+
+const BANNER: &[u8] = include_bytes!("../assets/banner.avif");
+const SAMPLE_APP_BR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample-app.zip.br"));
+
+fn sample_app_zip() -> &'static [u8] {
+    static CACHE: OnceLock<Vec<u8>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut out = Vec::new();
+        brotli::BrotliDecompress(&mut &SAMPLE_APP_BR[..], &mut out)
+            .expect("embedded brotli data is valid");
+        out
+    })
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(index_page))
+        .route("/banner.avif", get(serve_banner))
+        .route("/sample-app.zip", get(serve_sample_app))
         .route("/local", get(local_page))
         .route("/local/upload", post(handle_upload))
+        .route("/local/forget", post(handle_forget))
+}
+
+async fn serve_banner() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/avif")],
+        BANNER,
+    )
+}
+
+async fn serve_sample_app() -> impl axum::response::IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/zip"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"seal-game-of-life.zip\"",
+            ),
+        ],
+        sample_app_zip(),
+    )
 }
 
 async fn index_page(State(state): State<AppState>) -> Html<String> {
     let apps = state.list_local_apps().await;
 
     let app_list = if apps.is_empty() {
-        r#"<p class="empty">No apps installed yet.</p>"#.to_string()
+        r#"<p class="empty">No known apps yet.</p>"#.to_string()
     } else {
         let items: Vec<String> = apps
             .iter()
             .map(|app| {
                 let host = local_app_host(&app.hash);
+                let hash = html_escape(&app.hash);
                 format!(
-                    r#"<li><a href="https://{host}/">{name}</a> <span class="hash">{short_hash}…</span></li>"#,
+                    r#"<li><a href="https://{host}/">{name}</a> <span class="hash">{short_hash}…</span> <button class="forget" title="Forget app" onclick="forgetApp('{hash}')">🗑</button></li>"#,
                     name = html_escape(&app.name),
-                    short_hash = &app.hash[..12],
+                    short_hash = &app.hash[..app.hash.len().min(12)],
                 )
             })
             .collect();
@@ -47,27 +86,77 @@ async fn index_page(State(state): State<AppState>) -> Html<String> {
   h1 span {{ font-size: 1.8rem; }}
   .subtitle {{ color: #666; margin-bottom: 2rem; }}
   nav {{ margin-bottom: 2rem; display: flex; gap: 1rem; }}
-  nav a {{ color: #2563eb; text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #2563eb; border-radius: 6px; }}
-  nav a:hover {{ background: #2563eb; color: white; }}
+  nav a, nav button {{ color: #2563eb; text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #2563eb; border-radius: 6px; background: none; font: inherit; cursor: pointer; }}
+  nav a:hover, nav button:hover {{ background: #2563eb; color: white; }}
   ul {{ list-style: none; }}
   li {{ padding: 0.75rem 0; border-bottom: 1px solid #eee; }}
   li a {{ color: #2563eb; text-decoration: none; font-weight: 500; }}
   li a:hover {{ text-decoration: underline; }}
   .hash {{ color: #999; font-family: monospace; font-size: 0.85rem; margin-left: 0.5rem; }}
   .empty {{ color: #999; font-style: italic; }}
+  .forget {{ background: none; border: none; cursor: pointer; font-size: 1rem; opacity: 0.4; padding: 0 0.25rem; vertical-align: middle; }}
+  .forget:hover {{ opacity: 1; }}
+  .drop-overlay {{ display: none; position: fixed; inset: 0; background: rgba(37,99,235,0.12); border: 3px dashed #2563eb; z-index: 100; align-items: center; justify-content: center; font-size: 1.3rem; color: #2563eb; font-weight: 600; }}
+  .drop-overlay.visible {{ display: flex; }}
+  .status {{ margin-top: 1rem; color: #666; }}
+  .status.error {{ color: #dc2626; }}
 </style>
 </head>
 <body>
+  <img src="/banner.avif" alt="Seal" style="width:100%;border-radius:12px;margin-bottom:1.5rem;">
   <h1><span>🦭</span> Seal</h1>
   <p class="subtitle">Secure frontends</p>
   <nav>
-    <a href="/local">Install local app</a>
+    <a href="/local">Add zipped app</a>
+    <a href="/sample-app.zip" download>Download sample app</a>
   </nav>
-  <h2>Installed Apps</h2>
+  <h2>Known Apps</h2>
   {app_list}
+  <div class="status" id="status"></div>
+  <div class="drop-overlay" id="drop-overlay">Drop .zip to add</div>
+  <script>
+    async function forgetApp(hash) {{
+      if (!confirm('Forget this app?')) return;
+      const r = await fetch('/local/forget', {{ method: 'POST', headers: {{'Content-Type': 'application/x-www-form-urlencoded'}}, body: 'hash=' + encodeURIComponent(hash) }});
+      if (r.ok) location.reload();
+      else alert('Error: ' + await r.text());
+    }}
+    const overlay = document.getElementById('drop-overlay');
+    const status = document.getElementById('status');
+    let dragCount = 0;
+    document.addEventListener('dragenter', e => {{ e.preventDefault(); if (++dragCount === 1) overlay.classList.add('visible'); }});
+    document.addEventListener('dragleave', e => {{ e.preventDefault(); if (--dragCount === 0) overlay.classList.remove('visible'); }});
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('drop', async e => {{
+      e.preventDefault(); dragCount = 0; overlay.classList.remove('visible');
+      const file = e.dataTransfer.files[0];
+      if (!file || !file.name.endsWith('.zip')) {{ status.textContent = 'Please drop a .zip file'; status.className = 'status error'; return; }}
+      status.textContent = 'Adding ' + file.name + '…'; status.className = 'status';
+      const fd = new FormData(); fd.append('file', file);
+      try {{
+        const r = await fetch('/local/upload', {{ method: 'POST', body: fd }});
+        if (r.ok) location.reload();
+        else {{ status.textContent = 'Error: ' + await r.text(); status.className = 'status error'; }}
+      }} catch (err) {{ status.textContent = 'Error: ' + err.message; status.className = 'status error'; }}
+    }});
+  </script>
 </body>
 </html>"#
     ))
+}
+
+async fn handle_forget(
+    State(state): State<AppState>,
+    axum::Form(form): axum::Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(hash) = form.get("hash") else {
+        return (StatusCode::BAD_REQUEST, "missing hash").into_response();
+    };
+    match state.forget_local_app(hash).await {
+        Ok(true) => StatusCode::OK.into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "app not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e}")).into_response(),
+    }
 }
 
 async fn local_page() -> Html<&'static str> {
@@ -77,7 +166,7 @@ async fn local_page() -> Html<&'static str> {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Install Local App — Seal</title>
+<title>Add Zipped App — Seal</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 2rem 1rem; color: #1a1a2e; }
@@ -99,7 +188,7 @@ async fn local_page() -> Html<&'static str> {
 </head>
 <body>
   <a href="/" class="back">← Back</a>
-  <h1>Install Local App</h1>
+  <h1>Add Zipped App</h1>
   <p style="color: #666; margin-bottom: 1.5rem;">
     Drop a .zip file to serve it locally under a content-addressed .seal URL.
   </p>
@@ -147,7 +236,7 @@ async fn local_page() -> Html<&'static str> {
     });
 
     async function submitFile(file) {
-      status.textContent = 'Uploading and installing...';
+      status.textContent = 'Uploading…';
       status.className = 'status';
 
       const formData = new FormData();
@@ -157,11 +246,10 @@ async fn local_page() -> Html<&'static str> {
         const resp = await fetch('/local/upload', {
           method: 'POST',
           body: formData,
-          redirect: 'follow',
         });
-        if (resp.redirected) {
-          window.location.href = resp.url;
-        } else if (!resp.ok) {
+        if (resp.ok) {
+          window.location.href = await resp.text();
+        } else {
           const text = await resp.text();
           status.textContent = 'Error: ' + text;
           status.className = 'status error';

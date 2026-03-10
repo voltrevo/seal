@@ -1,6 +1,6 @@
 # Seal
 
-Seal protects users from unverifiable web frontends. Open-source web apps can publish their frontend as a `.tar.br` bundle; users run a local daemon that serves a cached, verified copy under the `.seal` TLD.
+Seal protects users from unverifiable web frontends. Open-source web apps can publish their frontend as a `.zip.br` bundle; users run a local daemon that serves a cached, verified copy under the `.seal` TLD.
 
 ## Components
 
@@ -39,7 +39,7 @@ Hosted at `<web-location>/.seal/manifest.json`. The page that advertises Seal su
 - **`seal_url`**: full `.seal` URL with `https://` prefix. Daemon verifies it matches the web location the manifest was fetched from.
 - **`chain_id`** / **`registry`**: identify the governing contract. Daemon rejects unrecognized registries.
 - **`owner`**: Ethereum address. Daemon cross-references with on-chain record.
-- **`bundleSources`**: array of base URLs serving `<keccak256-hash>.tar.br`. Can be empty — the on-chain `VersionRecord` also has this field. Daemon tries all sources (manifest + on-chain).
+- **`bundleSources`**: array of base URLs serving `<keccak256-hash>.zip.br`. Can be empty — the on-chain `VersionRecord` also has this field. Daemon tries all sources (manifest + on-chain).
 
 Version, bundle hash, and integrity are on-chain only — the manifest does not duplicate them.
 
@@ -69,8 +69,8 @@ struct VersionRecord {
     address owner;
     string version;             // semver
     bytes32 bundleHash;         // keccak256 of the bundle
-    uint256 bundleFormat;       // 1 = tar.br (prototype only supports tar.br)
-    string[] bundleSources;     // base URLs serving <bundleHash>.tar.br
+    uint256 bundleFormat;       // 1 = zip.br
+    string[] bundleSources;     // base URLs serving <bundleHash>.zip.br
     uint256 publishedAt;        // block.timestamp — used for update delay
     string insecureMessage;     // empty = safe
     bytes32 previousVersionKey; // linked list for version history
@@ -81,7 +81,7 @@ Versions belong to the publishing owner and are not transferable.
 
 ### Functions
 
-- **`publish(sealUrl, name, version, bundleHash, bundleFormat, bundleSources, previousVersionKey)`** — creates app on first call. `previousVersionKey` must match current (prevents races). `bundleFormat` is `uint256` (1 = tar.br).
+- **`publish(sealUrl, name, version, bundleHash, bundleFormat, bundleSources, previousVersionKey)`** — creates app on first call. `previousVersionKey` must match current (prevents races). `bundleFormat` is `uint256` (1 = zip.br).
 - **`keepAlive(sealUrl)`** — refresh annually
 - **`markInsecure(versionKey, message)`** / **`clearInsecure(versionKey)`** — owner only
 - **`updateBundleSources(versionKey, bundleSources)`** — owner only
@@ -116,7 +116,7 @@ The intermediate CA issues leaf certs for `*.seal` sites. Since the root key is 
 
 ```
 ~/.local/share/seal-tld/
-├── bundles/          # raw bundle files (named by keccak256 hash)
+├── bundles/          # raw bundle files (named by content hash)
 ├── sites/            # extracted content
 └── state/            # per-site metadata JSON
 ```
@@ -124,17 +124,17 @@ The intermediate CA issues leaf certs for `*.seal` sites. Since the root key is 
 ### home.seal
 
 The daemon serves its own UI at `https://home.seal/`:
-- **`/`** — shows recently used apps and an "Install app" button
+- **`/`** — shows known apps with an "Add zipped app" link
 - **`/install`** — install flow for registered apps (by sealUrl or manifest URL)
-- **`/local`** — drop a `.zip` file to install a local/unregistered app (see below)
+- **`/local`** — drop a `.zip` file to add a local/unregistered app (see below)
 - **`/advisory`** — security advisory interstitial
 
-For per-app daemon UI (e.g. during install), the daemon redirects to `https://home.seal/install?seal_url=...&return=...` rather than using reserved paths on the app's domain.
+For per-app daemon UI (e.g. during registration), the daemon redirects to `https://home.seal/install?seal_url=...&return=...` rather than using reserved paths on the app's domain.
 
 ### Local apps
 
 For prototyping or running unregistered apps, users can drop a `.zip` file onto `https://home.seal/local`. The daemon:
-1. Computes the keccak256 hash of the zip file
+1. Computes a 192-bit keccak256 hash of the zip file (base36-encoded)
 2. Extracts and serves it at `https://<hash>--keccak.seal/`
 
 These apps have no on-chain record, no update mechanism, no ownership, and no security advisories. They are purely local — identified only by their content hash. The `--keccak` suffix in the hostname distinguishes them from regular seal apps (which encode a domain TLD).
@@ -155,7 +155,7 @@ This is useful for:
 
 **Via extension**: extension detects `<meta name="seal-tld-manifest">`, sends manifest URL to daemon. Daemon knows the exact sealUrl from the manifest.
 
-**Via direct navigation**: user types a `.seal` URL. If no installed app matches, the daemon tries progressively shorter paths to find a manifest. E.g. for `https://example--com.seal/app/dashboard`:
+**Via direct navigation**: user types a `.seal` URL. If no known app matches, the daemon tries progressively shorter paths to find a manifest. E.g. for `https://example--com.seal/app/dashboard`:
 1. Try `https://example.com/app/dashboard/.seal/manifest.json`
 2. Try `https://example.com/app/.seal/manifest.json` ← found, sealUrl is `https://example--com.seal/app`
 3. Would try `https://example.com/.seal/manifest.json` if above failed
@@ -215,4 +215,4 @@ Apps specifying an unrecognized registry are rejected.
 - **CSP / API policy enforcement**: daemon-injected Content Security Policy, static analysis for disallowed APIs
 - **SPA mode**: manifest opt-in for single-page app routing (unmatched paths fall back to `index.html`)
 - **App explorer**: browsable directory of registered apps at `home.seal`
-- **Additional bundle formats**: new `bundleFormat` values beyond 1 (tar.br)
+- **Additional bundle formats**: new `bundleFormat` values beyond 1 (zip.br)

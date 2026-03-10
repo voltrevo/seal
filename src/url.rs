@@ -67,20 +67,21 @@ pub fn is_local_app(seal_hostname: &str) -> bool {
     !without_tld.contains('.') && without_tld.ends_with(&format!("--{KECCAK_SUFFIX}"))
 }
 
-/// Parse a local app hostname, returning the hex hash if valid.
+/// Parse a local app hostname, returning the base36 hash if valid.
 pub fn parse_local_app(seal_hostname: &str) -> Option<String> {
     let without_tld = seal_hostname.strip_suffix(&format!(".{SEAL_TLD}"))?;
     let hash = without_tld.strip_suffix(&format!("--{KECCAK_SUFFIX}"))?;
-    if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
         Some(hash.to_string())
     } else {
         None
     }
 }
 
-/// Build a local app hostname from a hex hash.
-pub fn local_app_host(hash_hex: &str) -> String {
-    format!("{hash_hex}--{KECCAK_SUFFIX}.{SEAL_TLD}")
+/// Build a local app hostname from a base36 content hash.
+/// 192-bit keccak in base36 = ~38 chars + "--keccak" (10 chars) = ~48 chars (under DNS 63-char limit).
+pub fn local_app_host(hash: &str) -> String {
+    format!("{hash}--{KECCAK_SUFFIX}.{SEAL_TLD}")
 }
 
 /// Check if a hostname is the home.seal UI.
