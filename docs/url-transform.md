@@ -10,7 +10,7 @@ Given `https://sub.domain.tld/path`:
 
 1. Split the hostname into **subdomain prefix** (everything up to the last dot-separated label group) and **last label** (the registrable domain + TLD, i.e. everything after the last subdomain dot).
 2. In the last label, **escape existing dash runs**: any run of N dashes (N≥2) becomes (N+1) dashes.
-3. Replace the `.` separating domain from TLD with `--`.
+3. Replace **all** `.` in the last label with `--`.
 4. Append `.seal`.
 5. Path is preserved as-is.
 
@@ -23,7 +23,7 @@ Decoding reverses this: in the last label (before `.seal`), any run of N dashes 
 | `https://example.com/app` | `example.com` | `example--com` | `https://example--com.seal/app` |
 | `https://sub.example.com/app` | `example.com` | `example--com` | `https://sub.example--com.seal/app` |
 | `https://mail.google.com/inbox` | `google.com` | `google--com` | `https://mail.google--com.seal/inbox` |
-| `https://example.co.uk/app` | `co.uk` | `co--uk` | `https://example.co--uk.seal/app` |
+| `https://example.co.uk/app` | `example.co.uk` | `example--co--uk` | `https://example--co--uk.seal/app` |
 | `https://a.b.example.org/page` | `example.org` | `example--org` | `https://a.b.example--org.seal/page` |
 | `https://weird--com.com/x` | `weird--com.com` | `weird---com--com` | `https://weird---com--com.seal/x` |
 | `https://sub.weird--com.com/x` | `weird--com.com` | `weird---com--com` | `https://sub.weird---com--com.seal/x` |
@@ -47,8 +47,6 @@ Use the `addr` or `psl` crate to identify the eTLD+1 boundary.
 ## Rust: Encode
 
 ```rust
-use psl::List;
-
 const SEAL_TLD: &str = "seal";
 
 /// Encode a regular hostname into a .seal hostname.
@@ -56,32 +54,24 @@ const SEAL_TLD: &str = "seal";
 /// Example: "sub.example.com" -> "sub.example--com.seal"
 fn encode_host(hostname: &str) -> Option<String> {
     // Use the public suffix list to find the registrable domain boundary.
-    let domain = List.domain(hostname.as_bytes())?;
-    let suffix = std::str::from_utf8(domain.suffix().as_bytes()).ok()?;
+    let domain = psl::domain(hostname.as_bytes())?;
     let registrable = std::str::from_utf8(domain.as_bytes()).ok()?;
 
-    // The registrable domain is e.g. "example.com" or "weird--com.com".
+    // The registrable domain is e.g. "example.com" or "example.co.uk".
     // Everything before it in the hostname is the subdomain prefix.
     let prefix = if hostname.len() > registrable.len() {
-        // +1 to skip the dot between prefix and registrable domain
         Some(&hostname[..hostname.len() - registrable.len() - 1])
     } else {
         None
     };
 
-    // Split registrable domain into name and TLD.
-    // e.g. "example.com" -> name="example", tld="com"
-    // e.g. "example.co.uk" -> name="example", tld="co.uk"
-    let name = &registrable[..registrable.len() - suffix.len() - 1];
-
-    // Escape dash runs in name: N dashes (N>=2) become N+1 dashes.
-    let escaped_name = escape_dashes(name);
-
-    // Escape dash runs in suffix too (unlikely but be safe).
-    let escaped_suffix = escape_dashes(suffix);
-
-    // Join with -- to encode the dot.
-    let last_label = format!("{escaped_name}--{escaped_suffix}");
+    // Escape dash runs in each dot-separated label, then join all with "--".
+    // e.g. "example.co.uk" → "example--co--uk"
+    let last_label = registrable
+        .split('.')
+        .map(|part| escape_dashes(part))
+        .collect::<Vec<_>>()
+        .join("--");
 
     let seal_host = match prefix {
         Some(p) => format!("{p}.{last_label}.{SEAL_TLD}"),
