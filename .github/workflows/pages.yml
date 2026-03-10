@@ -37,9 +37,14 @@ jobs:
 
       - name: Assemble site
         run: |
-          mkdir -p _site/calculator _site/pomodoro
+          mkdir -p _site/calculator _site/pomodoro _site/bundle
           cp -r apps/calculator/dist/* _site/calculator/
           cp -r apps/pomodoro/dist/* _site/pomodoro/
+
+      - name: Build bundles
+        run: |
+          node apps/build-bundle.mjs apps/calculator _site/bundle
+          node apps/build-bundle.mjs apps/pomodoro _site/bundle
 
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,0 +1,9 @@
+{
+  "seal_url": "https://voltrevo.github--io.seal/seal/calculator",
+  "chain_id": 1,
+  "registry": "0x0377Ef2b30CA1E93D54de6576CFb8E133663AD9E",
+  "owner": "0x6d25087f4a72348AC367C3df825e7e94c9390915",
+  "bundleSources": [
+    "https://voltrevo.github.io/seal/bundle/"
+  ]
+}

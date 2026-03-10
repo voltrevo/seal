@@ -39,7 +39,7 @@ Hosted at `<web-location>/.seal/manifest.json`. The page that advertises Seal su
 - **`seal_url`**: full `.seal` URL with `https://` prefix. Daemon verifies it matches the web location the manifest was fetched from.
 - **`chain_id`** / **`registry`**: identify the governing contract. Daemon rejects unrecognized registries.
 - **`owner`**: Ethereum address. Daemon cross-references with on-chain record.
-- **`bundleSources`**: array of base URLs serving `<keccak256-hash>.zip.br`. Can be empty — the on-chain `VersionRecord` also has this field. Daemon tries all sources (manifest + on-chain).
+- **`bundleSources`**: array of base URLs serving `<contentHash>.zip.br`. Content hash is the keccak256 truncated to 192 bits, base36 encoded (~38 lowercase alphanumeric chars) — the same encoding used for `<hash>--keccak.seal` local app URLs. Can be empty — the on-chain `VersionRecord` also has this field. Daemon tries all sources (manifest + on-chain).
 
 Version, bundle hash, and integrity are on-chain only — the manifest does not duplicate them.
 
@@ -70,7 +70,7 @@ struct VersionRecord {
     string version;             // semver
     bytes32 bundleHash;         // keccak256 of the bundle
     uint256 bundleFormat;       // 1 = zip.br
-    string[] bundleSources;     // base URLs serving <bundleHash>.zip.br
+    string[] bundleSources;     // base URLs serving <contentHash>.zip.br
     uint256 publishedAt;        // block.timestamp — used for update delay
     string insecureMessage;     // empty = safe
     bytes32 previousVersionKey; // linked list for version history
@@ -94,6 +94,18 @@ If keepAlive is active and the daemon detects a different owner in the manifest 
 - Otherwise → hard warning, user must acknowledge
 
 If keepAlive has expired → daemon silently accepts the new owner.
+
+## Content Hash
+
+Bundle filenames and local app URLs use the same content hash encoding:
+
+1. Compute keccak256 of the zip file (32 bytes)
+2. Truncate to 192 bits (24 bytes)
+3. Base36 encode (0-9, a-z) → ~38 lowercase alphanumeric chars
+
+This encoding is DNS-safe (case-insensitive, no special characters) and fits within the 63-char DNS label limit (38 + `--keccak` = 48 chars).
+
+Bundle sources serve files named `<contentHash>.zip.br`. The daemon derives the content hash from the on-chain `bundleHash` (full 256-bit keccak256) by truncating and base36-encoding.
 
 ## Daemon
 
