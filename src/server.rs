@@ -53,7 +53,7 @@ pub async fn run(state: AppState, cert_store: CertStore) -> anyhow::Result<()> {
 
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 443));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 443));
     let listener = TcpListener::bind(addr).await?;
     tracing::info!("listening on https://{addr}");
 
