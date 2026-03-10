@@ -112,4 +112,12 @@ With dnsmasq, `seal-ptr install` is all you need — dnsmasq resolves `*.seal` d
 
 ## Architecture
 
+## On-Chain Registry
+
+SealRegistry is deployed at [`0x0377Ef2b30CA1E93D54de6576CFb8E133663AD9E`](https://etherscan.io/address/0x0377Ef2b30CA1E93D54de6576CFb8E133663AD9E) on Ethereum mainnet (CREATE2 — same address on any EVM chain). Source is verified on Etherscan and Sourcify.
+
+See [registry/](registry/) for the contract source and deploy script.
+
+## Architecture
+
 See [docs/seal.md](docs/seal.md) for the full spec including the on-chain registry, browser extension, manifest format, and security model.
