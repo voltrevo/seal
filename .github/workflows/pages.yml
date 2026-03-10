@@ -1,0 +1,56 @@
+name: Deploy apps to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build calculator
+        working-directory: apps/calculator
+        run: npm ci && npm run build
+
+      - name: Build pomodoro
+        working-directory: apps/pomodoro
+        run: npm ci && npm run build
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/calculator _site/pomodoro
+          cp -r apps/calculator/dist/* _site/calculator/
+          cp -r apps/pomodoro/dist/* _site/pomodoro/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
