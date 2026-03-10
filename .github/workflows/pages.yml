@@ -38,8 +38,8 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site/calculator _site/pomodoro _site/bundle
-          cp -r apps/calculator/dist/* _site/calculator/
-          cp -r apps/pomodoro/dist/* _site/pomodoro/
+          cp -a apps/calculator/dist/. _site/calculator/
+          cp -a apps/pomodoro/dist/. _site/pomodoro/
 
       - name: Build bundles
         run: |
