@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Seal",
+  "version": "0.1.0",
+  "description": "Detects Seal-enabled web apps and redirects to verified local copies.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/seal-16.png",
+      "48": "icons/seal-48.png",
+      "128": "icons/seal-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/seal-16.png",
+    "48": "icons/seal-48.png",
+    "128": "icons/seal-128.png"
+  }
+}
