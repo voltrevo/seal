@@ -8,9 +8,12 @@
 //
 // Content hash: keccak256 truncated to 192 bits, base36 encoded (~38 chars).
 // Same encoding used for <hash>--keccak.seal local app URLs.
+//
+// Uses a deterministic store-only zip encoder (no compression, zeroed
+// timestamps, sorted entries) so the output is identical across platforms.
+// Brotli handles the actual compression.
 
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { brotliCompressSync, constants } from 'zlib';
 
@@ -21,14 +24,27 @@ if (!appDir || !outputDir) {
 }
 
 const distDir = join(resolve(appDir), 'dist');
-const zipPath = join(resolve(appDir), 'bundle.zip');
 
-// Create zip of dist contents (files at root of zip, not nested under dist/)
-execSync(`cd "${distDir}" && zip -r "${zipPath}" .`, { stdio: 'pipe' });
+// Collect all files recursively, sorted for determinism
+function walkDir(dir, base = '') {
+  const entries = [];
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    const rel = base ? `${base}/${name}` : name;
+    const st = statSync(full);
+    if (st.isDirectory()) {
+      entries.push(...walkDir(full, rel));
+    } else {
+      entries.push({ path: rel, data: readFileSync(full) });
+    }
+  }
+  return entries;
+}
 
-const zipData = readFileSync(zipPath);
+const files = walkDir(distDir);
+const zipData = createStoreZip(files);
 
-// Keccak256 (pure JS — no external dependencies)
+// Keccak256 (pure JS)
 const hexHash = keccak256(zipData);
 
 // Truncate to 192 bits (24 bytes = 48 hex chars) and base36 encode
@@ -46,10 +62,93 @@ mkdirSync(resolve(outputDir), { recursive: true });
 const outPath = join(resolve(outputDir), `${contentHash}.zip.br`);
 writeFileSync(outPath, compressed);
 
-// Clean up temp zip
-execSync(`rm "${zipPath}"`);
-
 console.log(contentHash);
+
+// --- Store-only ZIP encoder (deterministic) ---
+
+function createStoreZip(files) {
+  // All timestamps zeroed for reproducibility (DOS date: 0x0021 = 1980-01-01, time: 0x0000)
+  const dosTime = 0x0000;
+  const dosDate = 0x0021;
+
+  const localHeaders = [];
+  const centralHeaders = [];
+  let offset = 0;
+
+  for (const { path, data } of files) {
+    const nameBytes = Buffer.from(path, 'utf8');
+    const crc = crc32(data);
+
+    // Local file header (30 bytes + name + data)
+    const local = Buffer.alloc(30 + nameBytes.length + data.length);
+    local.writeUInt32LE(0x04034b50, 0);   // signature
+    local.writeUInt16LE(20, 4);            // version needed (2.0)
+    local.writeUInt16LE(0, 6);             // flags
+    local.writeUInt16LE(0, 8);             // compression: store
+    local.writeUInt16LE(dosTime, 10);      // mod time
+    local.writeUInt16LE(dosDate, 12);      // mod date
+    local.writeUInt32LE(crc, 14);          // crc32
+    local.writeUInt32LE(data.length, 18);  // compressed size
+    local.writeUInt32LE(data.length, 22);  // uncompressed size
+    local.writeUInt16LE(nameBytes.length, 26); // name length
+    local.writeUInt16LE(0, 28);            // extra field length
+    nameBytes.copy(local, 30);
+    data.copy(local, 30 + nameBytes.length);
+    localHeaders.push(local);
+
+    // Central directory header (46 bytes + name)
+    const central = Buffer.alloc(46 + nameBytes.length);
+    central.writeUInt32LE(0x02014b50, 0);  // signature
+    central.writeUInt16LE(20, 4);           // version made by
+    central.writeUInt16LE(20, 6);           // version needed
+    central.writeUInt16LE(0, 8);            // flags
+    central.writeUInt16LE(0, 10);           // compression: store
+    central.writeUInt16LE(dosTime, 12);     // mod time
+    central.writeUInt16LE(dosDate, 14);     // mod date
+    central.writeUInt32LE(crc, 16);         // crc32
+    central.writeUInt32LE(data.length, 20); // compressed size
+    central.writeUInt32LE(data.length, 24); // uncompressed size
+    central.writeUInt16LE(nameBytes.length, 28); // name length
+    central.writeUInt16LE(0, 30);           // extra field length
+    central.writeUInt16LE(0, 32);           // comment length
+    central.writeUInt16LE(0, 34);           // disk number start
+    central.writeUInt16LE(0, 36);           // internal attrs
+    central.writeUInt32LE(0, 38);           // external attrs
+    central.writeUInt32LE(offset, 42);      // local header offset
+    nameBytes.copy(central, 46);
+    centralHeaders.push(central);
+
+    offset += local.length;
+  }
+
+  const centralOffset = offset;
+  const centralSize = centralHeaders.reduce((s, h) => s + h.length, 0);
+
+  // End of central directory (22 bytes)
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);       // signature
+  eocd.writeUInt16LE(0, 4);                // disk number
+  eocd.writeUInt16LE(0, 6);                // central dir disk
+  eocd.writeUInt16LE(files.length, 8);     // entries on disk
+  eocd.writeUInt16LE(files.length, 10);    // total entries
+  eocd.writeUInt32LE(centralSize, 12);     // central dir size
+  eocd.writeUInt32LE(centralOffset, 16);   // central dir offset
+  eocd.writeUInt16LE(0, 20);               // comment length
+
+  return Buffer.concat([...localHeaders, ...centralHeaders, eocd]);
+}
+
+// CRC32 (used by ZIP format)
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc ^= buf[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 // --- keccak256 (FIPS 202 / Ethereum variant) ---
 
@@ -68,17 +167,14 @@ function keccak256(data) {
   ];
   const mask64 = 0xffffffffffffffffn;
 
-  // State: 5x5 array of 64-bit lanes
   const state = Array.from({length: 5}, () => Array(5).fill(0n));
 
-  // Padding: keccak uses 0x01 suffix (not SHA3's 0x06)
-  const rate = 136; // bytes (1088 bits for keccak256)
+  const rate = 136;
   const buf = Buffer.alloc(Math.ceil((data.length + 1) / rate) * rate);
   data.copy ? data.copy(buf) : Buffer.from(data).copy(buf);
   buf[data.length] |= 0x01;
   buf[buf.length - 1] |= 0x80;
 
-  // Absorb
   for (let offset = 0; offset < buf.length; offset += rate) {
     for (let i = 0; i < rate / 8; i++) {
       const x = i % 5, y = Math.floor(i / 5);
@@ -86,30 +182,24 @@ function keccak256(data) {
       for (let b = 0; b < 8; b++) lane |= BigInt(buf[offset + i * 8 + b]) << BigInt(b * 8);
       state[x][y] ^= lane;
     }
-    // Keccak-f[1600]
     for (let round = 0; round < ROUNDS; round++) {
-      // θ
       const C = Array(5);
       for (let x = 0; x < 5; x++) C[x] = state[x][0] ^ state[x][1] ^ state[x][2] ^ state[x][3] ^ state[x][4];
       const D = Array(5);
       for (let x = 0; x < 5; x++) D[x] = C[(x + 4) % 5] ^ (((C[(x + 1) % 5] << 1n) | (C[(x + 1) % 5] >> 63n)) & mask64);
       for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) state[x][y] = (state[x][y] ^ D[x]) & mask64;
-      // ρ and π
       const B = Array.from({length: 5}, () => Array(5).fill(0n));
       for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
         const r = ROTATIONS[x][y];
         const rot = r === 0 ? state[x][y] : (((state[x][y] << BigInt(r)) | (state[x][y] >> BigInt(64 - r))) & mask64);
         B[y][(2 * x + 3 * y) % 5] = rot;
       }
-      // χ
       for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++)
         state[x][y] = (B[x][y] ^ ((~B[(x + 1) % 5][y] & mask64) & B[(x + 2) % 5][y])) & mask64;
-      // ι
       state[0][0] = (state[0][0] ^ RC[round]) & mask64;
     }
   }
 
-  // Squeeze 256 bits
   let hex = '';
   for (let i = 0; i < 4; i++) {
     const x = i % 5, y = Math.floor(i / 5);
@@ -123,7 +213,7 @@ function base36Encode(bytes) {
   const ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
   if (bytes.every(b => b === 0)) return '0';
 
-  const num = [...bytes]; // mutable copy
+  const num = [...bytes];
   const digits = [];
   while (num.some(b => b !== 0)) {
     let remainder = 0;
