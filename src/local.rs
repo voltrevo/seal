@@ -89,7 +89,7 @@ fn content_hash(data: &[u8]) -> String {
 }
 
 /// Encode bytes as a base36 string (0-9, a-z). DNS-safe and case-insensitive.
-fn base36_encode(bytes: &[u8]) -> String {
+pub(crate) fn base36_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
     if bytes.iter().all(|&b| b == 0) {

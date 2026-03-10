@@ -135,17 +135,36 @@ async fn handle_request(
                 .unwrap(),
         }
     } else {
-        // For now, registered apps are not yet supported
-        Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("content-type", "text/html; charset=utf-8")
-            .body(Body::from(
-                "<html><body><h1>App not found</h1>\
-                 <p>This .seal app is not known to the daemon. \
-                 <a href=\"https://home.seal/\">Go to home.seal</a> to manage your apps.</p>\
-                 </body></html>",
-            ))
-            .unwrap()
+        // Check for registered app
+        if let Some(app) = state.find_registered_app(&hostname, &path).await {
+            let site_dir = state.site_dir(&app.content_hash);
+            if site_dir.exists() {
+                // Strip base_path from request path to get relative path
+                let relative = if app.base_path.is_empty() {
+                    path.clone()
+                } else {
+                    path.strip_prefix(&app.base_path)
+                        .unwrap_or(&path)
+                        .to_string()
+                };
+                serve_file(&site_dir, &relative).await
+            } else {
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("App registered but site files missing"))
+                    .unwrap()
+            }
+        } else {
+            // Unknown app — redirect to install page
+            let full_url = format!("https://{hostname}{path}");
+            let encoded = crate::registry::percent_encode(&full_url);
+            let install_url = format!("https://home.seal/install?url={encoded}");
+            Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header("location", &install_url)
+                .body(Body::empty())
+                .unwrap()
+        }
     };
 
     Ok(response)

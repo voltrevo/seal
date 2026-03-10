@@ -22,6 +22,29 @@ pub struct LocalApp {
     pub installed_at: u64,
 }
 
+/// Registered app from on-chain SealRegistry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredApp {
+    /// Full seal URL (e.g. "https://voltrevo.github--io.seal/seal/calculator").
+    pub seal_url: String,
+    /// .seal hostname (e.g. "voltrevo.github--io.seal").
+    pub hostname: String,
+    /// Base path (e.g. "/seal/calculator"). No trailing slash.
+    pub base_path: String,
+    /// Human-readable name from on-chain AppRecord.
+    pub name: String,
+    /// Owner address (hex with 0x prefix).
+    pub owner: String,
+    /// Full 256-bit bundle hash (hex with 0x prefix).
+    pub bundle_hash: String,
+    /// Truncated base36 content hash (used for site_dir key).
+    pub content_hash: String,
+    /// Semver version string.
+    pub version: String,
+    /// When this version was installed locally (unix timestamp).
+    pub installed_at: u64,
+}
+
 /// Shared daemon state.
 #[derive(Clone)]
 pub struct AppState {
@@ -32,6 +55,8 @@ pub struct AppState {
 struct Inner {
     /// Local apps keyed by keccak256 hash (base36).
     local_apps: HashMap<String, LocalApp>,
+    /// Registered apps keyed by seal_url.
+    registered_apps: HashMap<String, RegisteredApp>,
 }
 
 impl AppState {
@@ -42,9 +67,13 @@ impl AppState {
         std::fs::create_dir_all(data_dir.join("ca"))?;
 
         let local_apps = Self::load_local_apps(&data_dir)?;
+        let registered_apps = Self::load_registered_apps(&data_dir)?;
 
         Ok(Self {
-            inner: Arc::new(RwLock::new(Inner { local_apps })),
+            inner: Arc::new(RwLock::new(Inner {
+                local_apps,
+                registered_apps,
+            })),
             data_dir,
         })
     }
@@ -84,6 +113,70 @@ impl AppState {
         inner.local_apps.get(hash).cloned()
     }
 
+    fn load_registered_apps(data_dir: &Path) -> anyhow::Result<HashMap<String, RegisteredApp>> {
+        let state_dir = data_dir.join("state");
+        let mut apps = HashMap::new();
+
+        let entries = match std::fs::read_dir(&state_dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(apps),
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && filename.starts_with("reg-")
+            {
+                if let Ok(data) = std::fs::read_to_string(&path) {
+                    if let Ok(app) = serde_json::from_str::<RegisteredApp>(&data) {
+                        apps.insert(app.seal_url.clone(), app);
+                    }
+                }
+            }
+        }
+
+        Ok(apps)
+    }
+
+    /// Find a registered app matching the given hostname and request path.
+    pub async fn find_registered_app(
+        &self,
+        hostname: &str,
+        path: &str,
+    ) -> Option<RegisteredApp> {
+        let inner = self.inner.read().await;
+        inner
+            .registered_apps
+            .values()
+            .find(|app| {
+                app.hostname == hostname
+                    && (path == app.base_path
+                        || path.starts_with(&format!("{}/", app.base_path))
+                        || app.base_path.is_empty())
+            })
+            .cloned()
+    }
+
+    pub async fn register_app(&self, app: RegisteredApp) -> anyhow::Result<()> {
+        let state_path = self
+            .data_dir
+            .join("state")
+            .join(format!("reg-{}.json", app.content_hash));
+        let json = serde_json::to_string_pretty(&app)?;
+        std::fs::write(&state_path, &json)?;
+
+        let mut inner = self.inner.write().await;
+        inner.registered_apps.insert(app.seal_url.clone(), app);
+        Ok(())
+    }
+
+    pub async fn list_registered_apps(&self) -> Vec<RegisteredApp> {
+        let inner = self.inner.read().await;
+        let mut apps: Vec<_> = inner.registered_apps.values().cloned().collect();
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        apps
+    }
 
     pub async fn register_local_app(&self, app: LocalApp) -> anyhow::Result<()> {
         let state_path = self.data_dir.join("state").join(format!("{}.json", app.hash));

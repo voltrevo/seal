@@ -1,6 +1,7 @@
 mod home;
 mod local;
 mod log;
+mod registry;
 mod serve;
 mod server;
 mod service;

@@ -29,6 +29,8 @@ pub fn router() -> Router<AppState> {
         .route("/local", get(local_page))
         .route("/local/upload", post(handle_upload))
         .route("/local/forget", post(handle_forget))
+        .route("/install", get(install_page))
+        .route("/install/do", post(handle_install))
 }
 
 async fn serve_banner() -> impl axum::response::IntoResponse {
@@ -52,12 +54,30 @@ async fn serve_sample_app() -> impl axum::response::IntoResponse {
 }
 
 async fn index_page(State(state): State<AppState>) -> Html<String> {
-    let apps = state.list_local_apps().await;
+    let local_apps = state.list_local_apps().await;
+    let registered_apps = state.list_registered_apps().await;
 
-    let app_list = if apps.is_empty() {
-        r#"<p class="empty">No known apps yet.</p>"#.to_string()
+    let registered_list = if registered_apps.is_empty() {
+        r#"<p class="empty">No registered apps installed.</p>"#.to_string()
     } else {
-        let items: Vec<String> = apps
+        let items: Vec<String> = registered_apps
+            .iter()
+            .map(|app| {
+                format!(
+                    r#"<li><a href="{seal_url}/">{name}</a> <span class="hash">v{version}</span></li>"#,
+                    seal_url = html_escape(&app.seal_url),
+                    name = html_escape(&app.name),
+                    version = html_escape(&app.version),
+                )
+            })
+            .collect();
+        format!("<ul>{}</ul>", items.join("\n"))
+    };
+
+    let app_list = if local_apps.is_empty() {
+        r#"<p class="empty">No local apps.</p>"#.to_string()
+    } else {
+        let items: Vec<String> = local_apps
             .iter()
             .map(|app| {
                 let host = local_app_host(&app.hash);
@@ -110,7 +130,9 @@ async fn index_page(State(state): State<AppState>) -> Html<String> {
     <a href="/local">Add zipped app</a>
     <a href="/sample-app.zip" download>Download sample app</a>
   </nav>
-  <h2>Known Apps</h2>
+  <h2>Registered Apps</h2>
+  {registered_list}
+  <h2 style="margin-top:1.5rem;">Local Apps</h2>
   {app_list}
   <div class="status" id="status"></div>
   <div class="drop-overlay" id="drop-overlay">Drop .zip to add</div>
@@ -156,6 +178,76 @@ async fn handle_forget(
         Ok(true) => StatusCode::OK.into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, "app not found").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e}")).into_response(),
+    }
+}
+
+async fn install_page() -> Html<&'static str> {
+    Html(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installing App — Seal</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 2rem 1rem; color: #1a1a2e; }
+  h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+  .status { color: #666; margin-bottom: 1rem; }
+  .status.error { color: #dc2626; }
+  .spinner { display: inline-block; width: 1.2em; height: 1.2em; border: 2px solid #ccc; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .back { color: #2563eb; text-decoration: none; display: inline-block; margin-top: 1rem; }
+</style>
+</head>
+<body>
+  <h1>Installing App</h1>
+  <p class="status" id="status"><span class="spinner"></span> Discovering and installing...</p>
+  <a href="/" class="back" id="back" style="display:none">Back to home</a>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const url = params.get('url');
+    const status = document.getElementById('status');
+    const back = document.getElementById('back');
+
+    if (!url) {
+      status.textContent = 'Error: missing url parameter';
+      status.className = 'status error';
+      back.style.display = 'inline-block';
+    } else {
+      fetch('/install/do', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'url=' + encodeURIComponent(url)
+      })
+      .then(r => r.ok ? r.text() : r.text().then(t => { throw new Error(t); }))
+      .then(redirect => { window.location.href = redirect; })
+      .catch(err => {
+        status.textContent = 'Error: ' + err.message;
+        status.className = 'status error';
+        back.style.display = 'inline-block';
+      });
+    }
+  </script>
+</body>
+</html>"#,
+    )
+}
+
+async fn handle_install(
+    State(state): State<AppState>,
+    axum::Form(form): axum::Form<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(url) = form.get("url") else {
+        return (StatusCode::BAD_REQUEST, "missing url").into_response();
+    };
+
+    match crate::registry::install_app(&state, url).await {
+        Ok(redirect_url) => redirect_url.into_response(),
+        Err(e) => {
+            tracing::error!("install failed for {url}: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response()
+        }
     }
 }
 
