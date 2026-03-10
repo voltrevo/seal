@@ -1,10 +1,10 @@
 use crate::local::handle_upload;
-use crate::state::AppState;
 use crate::url::local_app_host;
 use axum::extract::State;
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::Router;
+use seal::state::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()

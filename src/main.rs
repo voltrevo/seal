@@ -1,17 +1,17 @@
-mod dns;
-mod dns_server;
 mod home;
 mod local;
 mod log;
 mod serve;
 mod server;
 mod service;
-mod state;
-mod tls;
 mod url;
 
-use state::AppState;
-use tls::CertStore;
+use seal::dns;
+use seal::dns_server;
+use seal::state;
+use seal::state::AppState;
+use seal::tls;
+use seal::tls::CertStore;
 
 const USAGE: &str = "\
 seal — secure frontends
@@ -37,13 +37,19 @@ COMMANDS:
     status   Check if the daemon is running.
                seal status
 
-    reinstall  Stop daemon, regenerate certs/DNS/trust store, restart if it
-               was previously running via `start`. Requires root/sudo:
+    reinstall  Stop daemon, reconfigure DNS, restart if it was previously
+               running via `start`. Certificates are preserved.
+               Use --full to also regenerate certs and trust store.
                  sudo seal reinstall
 
-    uninstall  Remove all seal state: stop daemon, remove certs, DNS config,
-               trust store entry, and data directory. Requires root/sudo:
+    uninstall  Stop daemon, remove DNS, trust store, service, and app data.
+               CA certificates on disk are kept so `seal install` reuses
+               them (seal-ptr clients stay valid). Use --full to also
+               delete the CA certificates.
                  sudo seal uninstall
+
+    show-cert  Print the root CA certificate (PEM) to stdout.
+                 seal show-cert > seal-root.pem
 
 Run `seal install` once after installing, then `seal start` to begin.
 Visit https://home.seal/ to manage your apps.
@@ -65,8 +71,15 @@ async fn main() -> anyhow::Result<()> {
         Some("run") => cmd_run(false).await,
         Some("stop") => cmd_stop(),
         Some("status") => cmd_status(),
-        Some("reinstall") => cmd_reinstall().await,
-        Some("uninstall") => cmd_uninstall(),
+        Some("reinstall") => {
+            let full = args.iter().any(|a| a == "--full");
+            cmd_reinstall(full).await
+        }
+        Some("uninstall") => {
+            let full = args.iter().any(|a| a == "--full");
+            cmd_uninstall(full)
+        }
+        Some("show-cert") => cmd_show_cert(),
         _ => {
             eprint!("{USAGE}");
             Ok(())
@@ -214,7 +227,7 @@ async fn cmd_run(log_to_file: bool) -> anyhow::Result<()> {
     if dns_method.needs_embedded_dns() {
         tracing::info!("starting embedded DNS server (method: {:?})", dns_method);
         tokio::spawn(async {
-            if let Err(e) = dns_server::run().await {
+            if let Err(e) = dns_server::run(std::net::Ipv4Addr::LOCALHOST).await {
                 tracing::error!("DNS server failed: {e}");
             }
         });
@@ -244,8 +257,8 @@ fn cmd_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `seal reinstall` — wipe certs/DNS/trust store, regenerate, restart if was running via service.
-async fn cmd_reinstall() -> anyhow::Result<()> {
+/// `seal reinstall` — reconfigure DNS (and optionally certs/trust store), restart if was running.
+async fn cmd_reinstall(full: bool) -> anyhow::Result<()> {
     // Detect if running via service manager (not `seal run`)
     let was_service_running = matches!(service::status(), Ok(Some(_)));
 
@@ -255,17 +268,19 @@ async fn cmd_reinstall() -> anyhow::Result<()> {
         service::stop()?;
     }
 
-    // Remove old certs, trust store entry, and DNS config
-    let data_dir = state::data_dir();
-    let ca_dir = data_dir.join("ca");
-    if ca_dir.exists() {
-        std::fs::remove_dir_all(&ca_dir)?;
-        eprintln!("removed old CA certificates");
-    }
+    if full {
+        // --full: regenerate certs and trust store too
+        let data_dir = state::data_dir();
+        let ca_dir = data_dir.join("ca");
+        if ca_dir.exists() {
+            std::fs::remove_dir_all(&ca_dir)?;
+            eprintln!("removed old CA certificates");
+        }
 
-    match tls::uninstall_trust_store() {
-        Ok(()) => {}
-        Err(e) => eprintln!("warning: could not remove trust store entry: {e}"),
+        match tls::uninstall_trust_store() {
+            Ok(()) => {}
+            Err(e) => eprintln!("warning: could not remove trust store entry: {e}"),
+        }
     }
 
     match dns::unconfigure() {
@@ -273,7 +288,7 @@ async fn cmd_reinstall() -> anyhow::Result<()> {
         Err(e) => eprintln!("warning: could not remove DNS configuration: {e}"),
     }
 
-    // Re-run install
+    // Re-run install (idempotent for certs if they still exist)
     eprintln!();
     cmd_install().await?;
 
@@ -286,8 +301,11 @@ async fn cmd_reinstall() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `seal uninstall` — remove all seal state from the system.
-fn cmd_uninstall() -> anyhow::Result<()> {
+/// `seal uninstall` — remove seal state from the system.
+/// By default, CA certificates on disk are preserved so `seal install`
+/// reuses them (seal-ptr clients don't need to update).
+/// Use --full to also delete the CA directory.
+fn cmd_uninstall(full: bool) -> anyhow::Result<()> {
     let data_dir = state::data_dir();
 
     // 1. Stop and remove system service
@@ -296,14 +314,7 @@ fn cmd_uninstall() -> anyhow::Result<()> {
         Err(e) => eprintln!("warning: could not remove system service: {e}"),
     }
 
-    // 2. Remove root CA from system trust store
-    eprintln!();
-    match tls::uninstall_trust_store() {
-        Ok(()) => {}
-        Err(e) => eprintln!("warning: could not remove trust store entry: {e}"),
-    }
-
-    // 3. Remove DNS configuration
+    // 2. Remove DNS configuration
     eprintln!();
     match dns::unconfigure() {
         Ok(true) => eprintln!("DNS configuration removed"),
@@ -311,17 +322,61 @@ fn cmd_uninstall() -> anyhow::Result<()> {
         Err(e) => eprintln!("warning: could not remove DNS configuration: {e}"),
     }
 
-    // 4. Remove data directory
+    // 3. Remove root CA from system trust store
     eprintln!();
-    if data_dir.exists() {
-        std::fs::remove_dir_all(&data_dir)?;
-        eprintln!("removed {}", data_dir.display());
+    match tls::uninstall_trust_store() {
+        Ok(()) => {}
+        Err(e) => eprintln!("warning: could not remove trust store entry: {e}"),
+    }
+
+    if full {
+        // 4. Remove entire data directory (including ca/)
+        eprintln!();
+        if data_dir.exists() {
+            std::fs::remove_dir_all(&data_dir)?;
+            eprintln!("removed {}", data_dir.display());
+        } else {
+            eprintln!("data directory already removed");
+        }
     } else {
-        eprintln!("data directory already removed");
+        // 4. Remove app data but keep ca/
+        eprintln!();
+        for subdir in ["bundles", "sites", "state"] {
+            let path = data_dir.join(subdir);
+            if path.exists() {
+                std::fs::remove_dir_all(&path)?;
+                eprintln!("removed {}", path.display());
+            }
+        }
+        for file in ["daemon.log", "seal.pid"] {
+            let path = data_dir.join(file);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            }
+        }
     }
 
     eprintln!();
-    eprintln!("seal has been fully uninstalled");
+    if full {
+        eprintln!("seal has been fully uninstalled");
+    } else {
+        eprintln!("seal has been uninstalled (CA certificates retained for seal-ptr compatibility)");
+        eprintln!("to also remove certificates: sudo seal uninstall --full");
+    }
+    Ok(())
+}
+
+/// `seal show-cert` — print root CA certificate PEM to stdout.
+fn cmd_show_cert() -> anyhow::Result<()> {
+    let cert_path = state::data_dir().join("ca").join("root.cert.pem");
+    if !cert_path.exists() {
+        anyhow::bail!(
+            "root certificate not found at {}. Run `sudo seal install` first.",
+            cert_path.display()
+        );
+    }
+    let pem = std::fs::read_to_string(&cert_path)?;
+    print!("{pem}");
     Ok(())
 }
 

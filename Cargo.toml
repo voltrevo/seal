@@ -3,6 +3,14 @@ name = "seal"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "seal"
+path = "src/main.rs"
+
+[[bin]]
+name = "seal-ptr"
+path = "src/bin/seal-ptr.rs"
+
 [dependencies]
 axum = { version = "0.7", features = ["multipart"] }
 rcgen = { version = "0.13", features = ["x509-parser"] }

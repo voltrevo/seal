@@ -1,9 +1,9 @@
 use std::net::Ipv4Addr;
 use tokio::net::UdpSocket;
 
-/// Run a minimal DNS server on 127.0.0.1:53 that responds to *.seal with 127.0.0.1.
+/// Run a minimal DNS server on 127.0.0.1:53 that responds to *.seal with the given IP.
 /// All other queries get NXDOMAIN.
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(target: Ipv4Addr) -> anyhow::Result<()> {
     let socket = UdpSocket::bind("127.0.0.1:53").await?;
     tracing::info!("DNS server listening on 127.0.0.1:53");
 
@@ -18,7 +18,7 @@ pub async fn run() -> anyhow::Result<()> {
         };
 
         let query = &buf[..len];
-        if let Some(response) = handle_query(query) {
+        if let Some(response) = handle_query(query, target) {
             if let Err(e) = socket.send_to(&response, src).await {
                 tracing::debug!("DNS send error: {e}");
             }
@@ -26,7 +26,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
 }
 
-fn handle_query(query: &[u8]) -> Option<Vec<u8>> {
+fn handle_query(query: &[u8], target: Ipv4Addr) -> Option<Vec<u8>> {
     // Minimum DNS header is 12 bytes
     if query.len() < 12 {
         return None;
@@ -40,7 +40,7 @@ fn handle_query(query: &[u8]) -> Option<Vec<u8>> {
     let is_seal = name_lower == "seal" || name_lower.ends_with(".seal");
 
     if is_seal {
-        Some(build_response(id, query, &qname, Ipv4Addr::LOCALHOST))
+        Some(build_response(id, query, &qname, target))
     } else {
         Some(build_nxdomain(id, query))
     }

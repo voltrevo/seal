@@ -1,4 +1,4 @@
-use crate::state::{AppState, LocalApp};
+use seal::state::{AppState, LocalApp};
 use crate::url::local_app_host;
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;

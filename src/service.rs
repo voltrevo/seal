@@ -119,7 +119,7 @@ const LAUNCHD_PLIST: &str = "/Library/LaunchDaemons/com.seal.daemon.plist";
 const LAUNCHD_LABEL: &str = "com.seal.daemon";
 
 fn install_launchd(exe_path: &Path) -> anyhow::Result<()> {
-    let data_dir = crate::state::data_dir();
+    let data_dir = seal::state::data_dir();
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

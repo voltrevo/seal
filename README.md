@@ -67,14 +67,37 @@ Subdomain dots are preserved for same-origin compatibility. See [docs/url-transf
 ## Commands
 
 ```
-seal install      Generate CA certs, configure DNS and trust store (requires sudo)
-seal start        Start daemon and enable on boot (requires sudo)
-seal run          Run daemon in the foreground
-seal stop         Stop the daemon (requires sudo)
-seal status       Check if the daemon is running
-seal reinstall    Regenerate certs/DNS/trust store, restart if running (requires sudo)
-seal uninstall    Remove all seal state from the system (requires sudo)
+seal install        Generate CA certs, configure DNS and trust store (requires sudo)
+seal start          Start daemon and enable on boot (requires sudo)
+seal run            Run daemon in the foreground
+seal stop           Stop the daemon (requires sudo)
+seal status         Check if the daemon is running
+seal show-cert      Print the root CA certificate (PEM) to stdout
+seal reinstall      Reconfigure DNS, restart if running (requires sudo)
+seal reinstall --full  Also regenerate certs and trust store
+seal uninstall      Remove service, DNS, trust store, and app data (requires sudo)
+seal uninstall --full  Also delete CA certificates
 ```
+
+## seal-ptr
+
+`seal-ptr` lets other machines on your network use a remote Seal instance. It configures DNS to resolve `*.seal` to the remote host's IP and installs its root CA certificate.
+
+```bash
+# On the seal server, export the root certificate
+seal show-cert > seal-root.pem
+
+# On the client machine, install
+sudo seal-ptr install 10.0.0.5 ./seal-root.pem
+
+# Start the DNS daemon (only needed without dnsmasq)
+sudo seal-ptr start
+
+# To remove
+sudo seal-ptr uninstall
+```
+
+With dnsmasq, `seal-ptr install` is all you need — dnsmasq resolves `*.seal` directly to the remote IP. Without dnsmasq (systemd-resolved, macOS), `seal-ptr start` runs a lightweight local DNS server that responds to `*.seal` queries with the remote IP.
 
 ## Data Directory
 

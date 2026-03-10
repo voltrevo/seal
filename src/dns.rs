@@ -21,12 +21,20 @@ impl DnsMethod {
 }
 
 /// Configure system DNS to resolve *.seal to 127.0.0.1.
-/// Returns the method used, or None if already configured.
+/// Returns the method used and whether a new config was written.
 pub fn configure() -> anyhow::Result<(DnsMethod, bool)> {
+    configure_for("127.0.0.1")
+}
+
+/// Configure system DNS to resolve *.seal to the given target IP.
+/// For dnsmasq, the target is used directly. For systemd-resolved/macOS,
+/// DNS queries are forwarded to 127.0.0.1 (an embedded DNS server must
+/// return the target IP).
+pub fn configure_for(target: &str) -> anyhow::Result<(DnsMethod, bool)> {
     if cfg!(target_os = "macos") {
         configure_macos()
     } else {
-        configure_linux()
+        configure_linux(target)
     }
 }
 
@@ -71,16 +79,16 @@ fn configure_macos() -> anyhow::Result<(DnsMethod, bool)> {
 }
 
 /// Linux: prefer dnsmasq, fall back to systemd-resolved (which needs embedded DNS).
-fn configure_linux() -> anyhow::Result<(DnsMethod, bool)> {
+fn configure_linux(target: &str) -> anyhow::Result<(DnsMethod, bool)> {
     // Prefer dnsmasq — it resolves natively without an embedded DNS server
     if Path::new("/etc/dnsmasq.d").exists() {
-        let (method, changed) = configure_dnsmasq()?;
+        let (method, changed) = configure_dnsmasq(target)?;
         return Ok((method, changed));
     }
 
     // NetworkManager dnsmasq
     if Path::new("/etc/NetworkManager/dnsmasq.d").exists() {
-        let (method, changed) = configure_nm_dnsmasq()?;
+        let (method, changed) = configure_nm_dnsmasq(target)?;
         return Ok((method, changed));
     }
 
@@ -98,7 +106,7 @@ fn configure_linux() -> anyhow::Result<(DnsMethod, bool)> {
     );
 }
 
-fn configure_dnsmasq() -> anyhow::Result<(DnsMethod, bool)> {
+fn configure_dnsmasq(target: &str) -> anyhow::Result<(DnsMethod, bool)> {
     let conf_file = Path::new("/etc/dnsmasq.d/seal-tld.conf");
 
     if conf_file.exists() {
@@ -107,13 +115,13 @@ fn configure_dnsmasq() -> anyhow::Result<(DnsMethod, bool)> {
     }
 
     eprintln!("configuring dnsmasq for .seal TLD");
-    std::fs::write(conf_file, "address=/seal/127.0.0.1\n")?;
+    std::fs::write(conf_file, format!("address=/seal/{target}\n"))?;
 
     restart_service("dnsmasq")?;
     Ok((DnsMethod::Dnsmasq, true))
 }
 
-fn configure_nm_dnsmasq() -> anyhow::Result<(DnsMethod, bool)> {
+fn configure_nm_dnsmasq(target: &str) -> anyhow::Result<(DnsMethod, bool)> {
     let conf_file = Path::new("/etc/NetworkManager/dnsmasq.d/seal-tld.conf");
 
     if conf_file.exists() {
@@ -122,7 +130,7 @@ fn configure_nm_dnsmasq() -> anyhow::Result<(DnsMethod, bool)> {
     }
 
     eprintln!("configuring NetworkManager dnsmasq for .seal TLD");
-    std::fs::write(conf_file, "address=/seal/127.0.0.1\n")?;
+    std::fs::write(conf_file, format!("address=/seal/{target}\n"))?;
 
     restart_service("NetworkManager")?;
     Ok((DnsMethod::NmDnsmasq, true))
