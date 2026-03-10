@@ -1,8 +1,5 @@
 # Seal
 
-Actual repo: https://github.com/voltrevo/seal
-(./copy-of-repo also provided)
-
 ## Team
 - Andrew Morris (voltrevo)
 
